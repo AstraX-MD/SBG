@@ -5,8 +5,8 @@ export default {
   emoji: '✨',
   desc: 'Bot status',
   async execute(sock, m, args, db) {
-    logger.cmd('alive', 'Triggered', { from: m.key.remoteJid, sender: m.pushName })
     try {
+      logger.cmd('alive', 'Triggered', { from: m.key.remoteJid, sender: m.pushName })
       const prefixDisplay = db.data.noprefix ? 'Off' : db.data.prefix
       const text = `╭❖『 ✨ ALIVE 』
 │
@@ -20,6 +20,8 @@ export default {
       logger.success('alive', 'Response sent', { to: m.key.remoteJid })
     } catch (e) {
       logger.error('alive', 'Failed', e.message)
+      const errorBox = `╭❖『 ❌ ERROR 』\n│\n├❖ *Command:* alive\n├❖ *Status:* Failed\n├⊸ *Reason:* Internal Error\n│\n╰❖ *${db.data.botname}* 🦚`
+      await sock.sendMessage(m.key.remoteJid, { text: errorBox })
     }
   }
 }

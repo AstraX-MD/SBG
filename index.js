@@ -29,13 +29,21 @@ app.use(express.json())
 app.get('/', (req, res) => res.send(aliveHtml))
 app.get('/status', (req, res) => res.send(statusHtml))
 
+// PROCESS ERROR HANDLING - NEVER EXIT
+process.on('uncaughtException', (err) => {
+  logger.error('CRASH', 'Uncaught Exception detected', err.stack)
+})
+process.on('unhandledRejection', (reason) => {
+  logger.error('CRASH', 'Unhandled Rejection detected', reason)
+})
+
 function loadSessionFromEnv() {
-  const sessionId = process.env.SESSION_ID
-  if (!sessionId || !sessionId.includes('~')) {
-    logger.error('SESSION', 'No SESSION_ID found in env or invalid format')
-    return false
-  }
   try {
+    const sessionId = process.env.SESSION_ID
+    if (!sessionId || !sessionId.includes('~')) {
+      logger.error('SESSION', 'No SESSION_ID found in env or invalid format')
+      return false
+    }
     const SESSION_DIR = db.data.sessionPath || './sessions'
     if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true })
     const base64Data = sessionId.split('~')[1]
@@ -51,105 +59,120 @@ function loadSessionFromEnv() {
 }
 
 async function startBot() {
-  logger.bot('STARTUP', 'Starting SBG Bot...')
-  await initDb()
-  
-  const platform = process.env.RENDER ? 'Render' : 
-                   process.env.RAILWAY_ENVIRONMENT ? 'Railway' :
-                   process.env.DYNO ? 'Heroku' :
-                   process.env.FLY_APP_NAME ? 'Fly' :
-                   process.env.FIREBASE_CONFIG ? 'Firebase' : 'Local'
-  db.data.platform = platform
+  try {
+    logger.bot('STARTUP', 'Starting SBG Bot...')
+    await initDb()
+    
+    const platform = process.env.RENDER ? 'Render' : 
+                     process.env.RAILWAY_ENVIRONMENT ? 'Railway' :
+                     process.env.DYNO ? 'Heroku' :
+                     process.env.FLY_APP_NAME ? 'Fly' :
+                     process.env.FIREBASE_CONFIG ? 'Firebase' : 'Local'
+    db.data.platform = platform
 
-  logger.success('DB', `Database mode: ${db.type}`)
+    logger.success('DB', `Database mode: ${db.type}`)
 
-  const SESSION_DIR = db.data.sessionPath || './sessions'
-  const CREDS_PATH = join(SESSION_DIR, 'creds.json')
+    const SESSION_DIR = db.data.sessionPath || './sessions'
+    const CREDS_PATH = join(SESSION_DIR, 'creds.json')
 
-  if (!fs.existsSync(CREDS_PATH)) {
-    if (!loadSessionFromEnv()) {
-      logger.error('STARTUP', 'No session found. Exiting.')
-      process.exit(1)
+    if (!fs.existsSync(CREDS_PATH)) {
+      if (!loadSessionFromEnv()) {
+        logger.error('STARTUP', 'No session found. Waiting for manual session...')
+        // We don't exit here, we wait for the user or manual session fix
+      }
     }
+
+    await initLoader()
+    
+    // VERSION FALLBACK SYSTEM
+    let version;
+    try {
+      const latest = await fetchLatestBaileysVersion()
+      version = latest.version
+    } catch (e) {
+      logger.warn('BAILEYS', 'Failed to fetch latest version, using fallback')
+      version = [2, 3000, 1015901307] // Fallback hardcoded version
+    }
+
+    logger.info('BAILEYS', `Using WA v${version.join('.')}`)
+
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
+
+    const sock = makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: false,
+      logger: pino({ level: 'silent' }),
+      browser: Browsers.ubuntu('Chrome'),
+      markOnlineOnConnect: false,
+      syncFullHistory: false,
+      generateHighQualityLinkPreview: false,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 10000,
+      getMessage: async (key) => {
+        return { conversation: '' }
+      }
+    })
+
+    sock.ev.on('creds.update', saveCreds)
+
+    sock.ev.on('connection.update', async (update) => {
+      try {
+        const { connection, lastDisconnect } = update
+        if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+          logger.error('CONNECTION', `Closed: ${statusCode}`, lastDisconnect?.error?.message)
+          
+          if (shouldReconnect) {
+            logger.warn('CONNECTION', 'Reconnecting in 10s...')
+            setTimeout(() => startBot(), 10000)
+          } else {
+            logger.error('CONNECTION', 'Logged out. Deleting session for fresh start...')
+            if (fs.existsSync(CREDS_PATH)) fs.unlinkSync(CREDS_PATH)
+            setTimeout(() => startBot(), 5000)
+          }
+        } else if (connection === 'open') {
+          const botNumber = sock.user.id.split(':')[0].split('@')[0]
+          if (!db.data.owner || db.data.owner === '') {
+            db.data.owner = botNumber + '@s.whatsapp.net'
+            await db.write()
+            logger.success('OWNER', `Owner auto-set to: ${botNumber}`)
+          }
+          
+          const botname = db.data.botname
+          const prefix = db.data.prefix
+          const owner = db.data.owner.split('@')[0]
+
+          logger.connected(sock.user.id, botname)
+          logger.banner(botname, prefix, owner, db.data.mode, version.join('.'))
+
+          if (!db.data.firstConnect) {
+            await sendConnectedMsg(sock)
+            db.data.firstConnect = true
+            await db.write()
+          }
+        }
+      } catch (e) {
+        logger.error('CONNECTION', 'Update error', e.message)
+      }
+    })
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      try {
+        if (type !== 'notify') return
+        for (const m of messages) {
+          const { MessageUpsert } = await import('./lib/MessageUpsert.js')
+          await MessageUpsert(sock, db, m)
+        }
+      } catch (e) {
+        logger.error('UPSERT', 'Error handling message', e.message)
+      }
+    })
+  } catch (e) {
+    logger.error('STARTUP', 'Fatal startBot error', e.message)
+    setTimeout(() => startBot(), 30000) // retry after 30s
   }
-
-  await initLoader()
-  const { version } = await fetchLatestBaileysVersion()
-  logger.info('BAILEYS', `Using WA v${version.join('.')}`)
-
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
-
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false,
-    logger: pino({ level: 'silent' }),
-    browser: Browsers.ubuntu('Chrome'),
-    markOnlineOnConnect: false,
-    syncFullHistory: false,
-    generateHighQualityLinkPreview: false,
-    defaultQueryTimeoutMs: 60000,
-    keepAliveIntervalMs: 10000,
-    getMessage: async (key) => {
-      return { conversation: '' }
-    }
-  })
-
-  sock.ev.on('creds.update', saveCreds)
-
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect } = update
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut
-      logger.error('CONNECTION', `Closed: ${statusCode}`, lastDisconnect?.error?.message)
-      if (shouldReconnect) {
-        logger.warn('CONNECTION', 'Reconnecting in 10s...')
-        setTimeout(() => startBot(), 10000)
-      } else {
-        logger.error('CONNECTION', 'Logged out. Delete sessions/ and re-pair.')
-        process.exit(1)
-      }
-    } else if (connection === 'open') {
-      const botNumber = sock.user.id.split(':')[0].split('@')[0]
-      if (!db.data.owner || db.data.owner === '') {
-        db.data.owner = botNumber + '@s.whatsapp.net'
-        await db.write()
-        logger.success('OWNER', `Owner auto-set to: ${botNumber}`)
-      }
-      
-      if (!db.data.antidelete.destination) {
-        db.data.antidelete.destination = db.data.owner
-        await db.write()
-      }
-
-      const botname = db.data.botname
-      const prefix = db.data.prefix
-      const owner = db.data.owner.split('@')[0]
-
-      logger.connected(sock.user.id, botname)
-      logger.banner(botname, prefix, owner, db.data.mode, version.join('.'))
-
-      if (!db.data.firstConnect) {
-        await sendConnectedMsg(sock)
-        db.data.firstConnect = true
-        await db.write()
-      }
-    }
-  })
-
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return
-    for (const m of messages) {
-      const { MessageUpsert } = await import('./lib/MessageUpsert.js')
-      await MessageUpsert(sock, db, m)
-    }
-  })
-
-  sock.ev.on('messages.delete', async (update) => {
-    const antidelete = await import('./plugins/events/anti/antidelete.js').catch(() => null)
-    if (antidelete) await antidelete.default(sock, db, update)
-  })
 }
 
 async function sendConnectedMsg(sock) {
@@ -166,7 +189,26 @@ async function sendConnectedMsg(sock) {
 ├⊸ *Session:* Valid & Secure
 │
 ╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
-    await sock.sendMessage(owner, { text: msg, mentions: [owner] })
+    
+    // FALLBACK 1: ContextInfo
+    try {
+      await sock.sendMessage(owner, { 
+        text: msg, 
+        mentions: [owner],
+        contextInfo: {
+          externalAdReply: {
+            title: db.data.botname,
+            body: db.data.presents,
+            mediaType: 1,
+            thumbnailUrl: db.data.botThumbnail,
+            sourceUrl: 'https://github.com'
+          }
+        }
+      })
+    } catch (e) {
+      // FALLBACK 2: Plain Text
+      await sock.sendMessage(owner, { text: msg, mentions: [owner] })
+    }
     logger.success('BOT', 'Connected message sent to owner')
   } catch (e) {
     logger.error('BOT', 'Failed to send connected msg', e.message)
