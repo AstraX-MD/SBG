@@ -78,7 +78,6 @@ async function startBot() {
     if (!fs.existsSync(CREDS_PATH)) {
       if (!loadSessionFromEnv()) {
         logger.error('STARTUP', 'No session found. Waiting for manual session...')
-        // We don't exit here, we wait for the user or manual session fix
       }
     }
 
@@ -91,7 +90,7 @@ async function startBot() {
       version = latest.version
     } catch (e) {
       logger.warn('BAILEYS', 'Failed to fetch latest version, using fallback')
-      version = [2, 3000, 1015901307] // Fallback hardcoded version
+      version = [2, 3000, 1015901307]
     }
 
     logger.info('BAILEYS', `Using WA v${version.join('.')}`)
@@ -162,6 +161,45 @@ async function startBot() {
       try {
         if (type !== 'notify') return
         for (const m of messages) {
+          if (!m.message) continue
+          const from = m.key.remoteJid
+          const sender = m.key.participant || m.key.remoteJid
+          
+          // JID Type Detection
+          let jidType = 'DM'
+          if (from.endsWith('@g.us')) jidType = 'GROUP'
+          else if (from.endsWith('@newsletter')) jidType = 'CHANNEL'
+          else if (from === 'status@broadcast') jidType = 'STATUS'
+
+          // Media Type Detection
+          const msgType = Object.keys(m.message)[0]
+          const mediaMap = {
+            conversation: 'TEXT',
+            extendedTextMessage: 'TEXT',
+            imageMessage: 'IMAGE',
+            videoMessage: 'VIDEO',
+            audioMessage: 'AUDIO',
+            documentMessage: 'DOCUMENT',
+            stickerMessage: 'STICKER',
+            locationMessage: 'LOCATION',
+            contactMessage: 'CONTACT',
+            reactionMessage: 'REACTION',
+            pollCreationMessageV3: 'POLL'
+          }
+          const mediaType = mediaMap[msgType] || msgType.toUpperCase().replace('MESSAGE', '')
+
+          // Body Extraction
+          const body = m.message.conversation || 
+                       m.message.extendedTextMessage?.text || 
+                       m.message.imageMessage?.caption || 
+                       m.message.videoMessage?.caption || ''
+          
+          const isCmd = body.startsWith(db.data.prefix)
+          
+          // Log Message
+          logger.incoming(from, sender.split('@')[0], body.slice(0, 30), mediaType, jidType, isCmd)
+
+          // Route Message
           const { MessageUpsert } = await import('./lib/MessageUpsert.js')
           await MessageUpsert(sock, db, m)
         }
@@ -171,7 +209,7 @@ async function startBot() {
     })
   } catch (e) {
     logger.error('STARTUP', 'Fatal startBot error', e.message)
-    setTimeout(() => startBot(), 30000) // retry after 30s
+    setTimeout(() => startBot(), 30000)
   }
 }
 
@@ -190,25 +228,7 @@ async function sendConnectedMsg(sock) {
 │
 ╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
     
-    // FALLBACK 1: ContextInfo
-    try {
-      await sock.sendMessage(owner, { 
-        text: msg, 
-        mentions: [owner],
-        contextInfo: {
-          externalAdReply: {
-            title: db.data.botname,
-            body: db.data.presents,
-            mediaType: 1,
-            thumbnailUrl: db.data.botThumbnail,
-            sourceUrl: 'https://github.com'
-          }
-        }
-      })
-    } catch (e) {
-      // FALLBACK 2: Plain Text
-      await sock.sendMessage(owner, { text: msg, mentions: [owner] })
-    }
+    await sock.sendMessage(owner, { text: msg, mentions: [owner] })
     logger.success('BOT', 'Connected message sent to owner')
   } catch (e) {
     logger.error('BOT', 'Failed to send connected msg', e.message)
