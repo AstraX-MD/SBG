@@ -9,7 +9,8 @@ import { fileURLToPath } from 'url'
 import { initDb, db } from './lib/database.js'
 import { logger } from './lib/logger.js'
 import { initLoader } from './lib/loader.js'
-import { routeMessage, routeEvent } from './lib/router.js'
+import { routeMessage } from './lib/router.js'
+import { MessageUpsert } from './lib/MessageUpsert.js'
 import aliveHtml from './public/alive.html.js'
 import statusHtml from './public/status.html.js'
 
@@ -27,8 +28,8 @@ const PORT = process.env.PORT || 3000
 app.use(express.static(join(__dirname, 'public')))
 app.use(express.json())
 
-app.get('/', (req, res) => res.send(aliveHtml(db.data)))
-app.get('/status', (req, res) => res.send(statusHtml(db.data, global.cmdStats || {})))
+app.get('/', (req, res) => res.send(aliveHtml))
+app.get('/status', (req, res) => res.send(statusHtml))
 
 function loadSessionFromEnv() {
   const sessionId = process.env.SESSION_ID
@@ -128,22 +129,7 @@ async function startBot() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return
     for (const m of messages) {
-      if (!m.message) continue
-      const from = m.key.remoteJid
-      const sender = m.key.participant || m.key.remoteJid
-      const msgType = Object.keys(m.message || {})[0]
-      const body = m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || m.message?.videoMessage?.caption || ''
-      const cmd = body.startsWith(db.data.prefix) ? body.split(' ')[0] : null
-
-      let chatType = 'DM'
-      if (from.endsWith('@g.us')) chatType = 'GROUP'
-      else if (from.endsWith('@newsletter')) chatType = 'CHANNEL'
-      else if (from === 'status@broadcast') chatType = 'STATUS'
-
-      const msgLabel = `${chatType} ${msgType?.toUpperCase() || 'UNKNOWN'}`
-      logger.incoming(from, sender.split('@')[0], cmd || msgLabel)
-
-      await routeMessage(sock, m)
+      await MessageUpsert(sock, db, m)
     }
   })
 }
