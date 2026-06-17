@@ -17,29 +17,40 @@ export default {
     const total = (os.totalmem() / 1024 / 1024 / 1024).toFixed(1)
     const ramP = ((mem.rss / os.totalmem()) * 100).toFixed(0)
     const ramBar = '█'.repeat(Math.min(Math.floor(ramP/10), 10)) + '░'.repeat(Math.max(10-Math.floor(ramP/10), 0))
+
+    const modes = {
+      'public': '🌍 Public',
+      'private': '🔒 Private',
+      'groups': '👥 Groups',
+      'dms': '📩 DMs',
+      'channel': '📢 Channel',
+      'silent': '🔕 Silent',
+      'onlytag': '🏷️ OnlyTag',
+      'onlynum': '📱 OnlyNum',
+      'onlyjid': '🎯 OnlyJID'
+    }
     
-    let text = `╭⊷『 ☀️ ${db.botname} MENU 』
+    let text = `╭⊷『 ☀️ ${db.data.botname} MENU 』
 │
 ├⊷ Status: ONLINE
 ├⊷ User: ${m.pushName || 'User'}
-├⊷ Mode: ${db.mode.toUpperCase()}
-├⊷ Prefix: ${db.prefix}
+├⊷ Mode: ${modes[db.data.mode] || '🌍 Public'}
+├⊷ Prefix: ${db.data.prefix}
 ├⊷ Uptime: ${h}h ${min}m ${sec}s
-├⊷ Platform: 🚀 ${db.platform}
+├⊷ Platform: 🚀 ${db.data.platform}
 ├⊷ RAM: ${ramBar} ${ramP}%
 ├⊷ Memory: ${used}MB / ${total}GB
 │
 ❖\n\n`
     
-    // Auto group by category with emoji
     for (const [catName, catData] of Object.entries(global.categories)) {
       if (catData.commands.length === 0) continue
       text += `╭⊷『 ${catData.emoji} ${catName.toUpperCase()} 』\n`
-      text += `│ ${catData.commands.map(c => db.prefix + c.name).join('\n│ ')}\n`
+      text += `│ ${catData.commands.map(c => db.data.prefix + c.name).join('\n│ ')}\n`
       text += `╰❖\n\n`
     }
     
-    text += `╰❖ *${db.botname} ${db.presents}* 🦚`
+    text += `╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
     
     await sock.sendMessage(m.key.remoteJid, { text })
   }

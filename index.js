@@ -66,6 +66,16 @@ async function startSBG() {
 
   await loadPlugins()
 
+  // Dynamic Platform Detection
+  let platform = 'Katabump/Pterodactyl'
+  if (process.env.RENDER) platform = 'Render'
+  else if (process.env.RAILWAY_ENVIRONMENT) platform = 'Railway'
+  else if (process.env.DYNO) platform = 'Heroku'
+  else if (process.env.FLY_APP_NAME) platform = 'Fly'
+  else if (process.env.FIREBASE_CONFIG) platform = 'Firebase'
+  
+  db.data.platform = platform
+
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', (update) => {
@@ -89,13 +99,11 @@ async function startSBG() {
           image: { url: db.data.botThumbnail },
           caption: `╭❖『 🤖 ${db.data.botname} CONNECTED 』
 │
-├❖ *To:* @owner
 ├❖ *Bot:* ${db.data.botname}
 ├❖ *Prefix:* ${db.data.prefix}
 ├❖ *Mode:* ${db.data.mode}
-├❖ *Database:* ${db.type}
+├❖ *Platform:* ${db.data.platform}
 ├❖ *Status:* ✅ Online
-├⊸ *Session:* Valid & Secure
 │
 ╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
         })
