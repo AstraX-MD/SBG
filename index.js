@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion, makeInMemoryStore } from '@whiskeysockets/baileys'
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
 import pino from 'pino'
 import fs from 'fs'
 import { join, dirname } from 'path'
@@ -22,13 +22,6 @@ logger.info('GLOBAL', 'Logger attached to global scope')
 const app = express()
 const server = createServer(app)
 const PORT = process.env.PORT || 3000
-
-// Initialize Store
-const store = makeInMemoryStore({ logger: pino({ level: 'silent' }) })
-store.readFromFile('./sessions/baileys_store.json')
-setInterval(() => {
-  store.writeToFile('./sessions/baileys_store.json')
-}, 10000)
 
 app.use(express.static(join(__dirname, 'public')))
 app.use(express.json())
@@ -98,15 +91,9 @@ async function startBot() {
     defaultQueryTimeoutMs: 60000,
     keepAliveIntervalMs: 10000,
     getMessage: async (key) => {
-      if (store) {
-        const msg = await store.loadMessage(key.remoteJid, key.id)
-        return msg?.message || undefined
-      }
       return { conversation: '' }
     }
   })
-
-  store.bind(sock.ev)
 
   sock.ev.on('creds.update', saveCreds)
 
