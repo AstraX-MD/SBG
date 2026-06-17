@@ -1,92 +1,60 @@
+import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
-import { Server } from 'socket.io'
-import { fileURLToPath } from 'url'
-import { dirname, join } from 'path'
-import os from 'os'
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  Browsers,
-  fetchLatestBaileysVersion
+import makeWASocket, { 
+  useMultiFileAuthState, 
+  DisconnectReason, 
+  Browsers, 
+  fetchLatestBaileysVersion 
 } from '@whiskeysockets/baileys'
-import dotenv from 'dotenv'
+import pino from 'pino'
+import fs from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import db from './lib/database.js'
+import { logger } from './lib/logger.js'
+import { loadPlugins } from './lib/loader.js'
+import { router } from './lib/router.js'
 import aliveHtml from './public/alive.html.js'
 import statusHtml from './public/status.html.js'
-import db from './lib/database.js'
-import { MessageUpsert } from './lib/MessageUpsert.js'
-import { loadPlugins } from './lib/loader.js'
-import logger, { cmdStats } from './lib/logger.js'
-
-dotenv.config()
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const BASE_SESSION_DIR = './sbg_session'
-const MAX_RAM_PERCENT = 75
 
 const app = express()
 const server = createServer(app)
-const io = new Server(server)
-const PORT = process.env.PORT || 10000
+const PORT = process.env.PORT || 3000
 
 app.use(express.static(join(__dirname, 'public')))
 app.use(express.json())
 
-app.get('/', (req, res) => {
-  res.send(aliveHtml)
-})
+app.get('/', (req, res) => res.send(aliveHtml))
+app.get('/status', (req, res) => res.send(statusHtml(db.data)))
 
-app.get('/status', (req, res) => {
-  res.send(statusHtml(db.data))
-})
-
-// API Endpoints
-app.get('/api/stats', (req, res) => {
-  res.json({
-    ...cmdStats,
-    totalCommands: global.commands?.size || 0
-  })
-})
-
-app.get('/api/info', (req, res) => {
-  res.json({
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    platform: db.data.platform,
-    os: {
-      total: os.totalmem(),
-      free: os.freemem()
-    }
-  })
-})
-
-app.post('/api/update', async (req, res) => {
-  const { field, value } = req.body
-  // Simple check - in production you'd use a secret key or session
-  if (field in db.data) {
-    db.data[field] = value
-    await db.write()
-    res.json({ success: true })
-  } else {
-    res.status(400).json({ success: false, error: 'Invalid field' })
+function loadSessionFromEnv() {
+  const sessionId = process.env.SESSION_ID
+  if (!sessionId || !sessionId.includes('~')) {
+    logger.error('SESSION', 'No SESSION_ID found in env or invalid format')
+    return false
   }
-})
+  try {
+    const SESSION_DIR = db.data.sessionPath || './sbg_session'
+    if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true })
+    const base64Data = sessionId.split('~')[1]
+    const decoded = Buffer.from(base64Data, 'base64').toString('utf-8')
+    const creds = JSON.parse(decoded)
+    fs.writeFileSync(join(SESSION_DIR, 'creds.json'), JSON.stringify(creds, null, 2))
+    logger.success('SESSION', `Session loaded from ${sessionId.split('~')[0]}~ prefix`)
+    return true
+  } catch (e) {
+    logger.error('SESSION', 'Failed to decode SESSION_ID', e.message)
+    return false
+  }
+}
 
-async function startSBG() {
-  const { state, saveCreds } = await useMultiFileAuthState(BASE_SESSION_DIR)
-  const { version } = await fetchLatestBaileysVersion()
-
-  const sock = makeWASocket({
-    version,
-    logger: logger,
-    printQRInTerminal: true,
-    auth: state,
-    browser: Browsers.ubuntu('Chrome')
-  })
-
-  await loadPlugins()
-
+async function startBot() {
+  logger.bot('STARTUP', 'Starting SBG Bot...')
+  
   // Dynamic Platform Detection
   let platform = 'Katabump/Pterodactyl'
   if (process.env.RENDER) platform = 'Render'
@@ -96,40 +64,130 @@ async function startSBG() {
   else if (process.env.FIREBASE_CONFIG) platform = 'Firebase'
   
   db.data.platform = platform
+  await db.write()
+  
+  logger.success('DB', `Database mode: ${db.type} | Platform: ${platform}`)
+
+  const SESSION_DIR = db.data.sessionPath || './sbg_session'
+  const CREDS_PATH = join(SESSION_DIR, 'creds.json')
+
+  if (!fs.existsSync(CREDS_PATH)) {
+    if (!loadSessionFromEnv()) {
+      logger.error('STARTUP', 'No session found. Waiting for QR (if enabled) or exit.')
+      // In this setup we strictly require SESSION_ID per prompt
+      process.exit(1)
+    }
+  }
+
+  await loadPlugins()
+  const { version } = await fetchLatestBaileysVersion()
+  logger.info('BAILEYS', `Using WA v${version.join('.')}`)
+
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
+
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger: pino({ level: 'silent' }),
+    browser: Browsers.ubuntu('Chrome'),
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: false,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 10000,
+    getMessage: async () => ({ conversation: '' })
+  })
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update
     if (connection === 'close') {
-      const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut
-      if (shouldReconnect) startSBG()
+      const statusCode = lastDisconnect?.error?.output?.statusCode
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+      logger.error('CONNECTION', `Closed: ${statusCode}`, lastDisconnect?.error?.message)
+      if (shouldReconnect) {
+        logger.warn('CONNECTION', 'Reconnecting in 10s...')
+        setTimeout(() => startBot(), 10000)
+      } else {
+        logger.error('CONNECTION', 'Logged out. Delete session directory and re-pair.')
+        process.exit(1)
+      }
     } else if (connection === 'open') {
-      const ownerJid = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+      const botNumber = sock.user.id.split(':')[0].split('@')[0]
+      if (!db.data.owner || db.data.owner === '') {
+        db.data.owner = botNumber
+        await db.write()
+        logger.success('OWNER', `Owner auto-set to: ${botNumber}`)
+      }
+
+      const { botname, prefix, owner } = db.data
+
+      logger.connected(sock.user.id, botname)
+      logger.banner(botname, prefix, owner, db.type, version.join('.'))
+
       if (!db.data.firstConnect) {
-        sock.sendMessage(ownerJid, {
-          image: { url: db.data.botThumbnail },
-          caption: `╭❖『 🤖 ${db.data.botname} CONNECTED 』
-│
-├❖ *Bot:* ${db.data.botname}
-├❖ *Prefix:* ${db.data.prefix}
-├❖ *Mode:* ${db.data.mode}
-├❖ *Platform:* ${db.data.platform}
-├❖ *Status:* ✅ Online
-│
-╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
-        })
+        await sendConnectedMsg(sock)
         db.data.firstConnect = true
+        await db.write()
       }
     }
   })
 
   sock.ev.on('messages.upsert', async (m) => {
-    await MessageUpsert(sock, db, m)
+    if (m.type !== 'notify') return
+    for (const msg of m.messages) {
+      if (!msg.message) continue
+      
+      const from = msg.key.remoteJid
+      const sender = msg.key.participant || msg.key.remoteJid
+      const msgType = Object.keys(msg.message || {})[0]
+      
+      let body = ''
+      if (msgType === 'conversation') body = msg.message.conversation
+      else if (msgType === 'extendedTextMessage') body = msg.message.extendedTextMessage.text
+      else if (msgType === 'imageMessage') body = msg.message.imageMessage.caption
+      else if (msgType === 'videoMessage') body = msg.message.videoMessage.caption
+      
+      const cmd = body.startsWith(db.data.prefix) ? body.split(' ')[0] : (db.data.noprefix ? body.split(' ')[0] : null)
+
+      let chatType = 'DM'
+      if (from.endsWith('@g.us')) chatType = 'GROUP'
+      else if (from.endsWith('@newsletter')) chatType = 'CHANNEL'
+      else if (from === 'status@broadcast') chatType = 'STATUS'
+
+      const msgLabel = `${chatType} ${msgType?.toUpperCase() || 'UNKNOWN'}`
+      logger.incoming(from, sender.split('@')[0], cmd || msgLabel)
+
+      await router(msg, sock, db)
+    }
   })
 }
 
+async function sendConnectedMsg(sock) {
+  try {
+    const owner = db.data.owner
+    const ownerJid = `${owner}@s.whatsapp.net`
+    const msg = `╭❖『 🤖 ${db.data.botname} CONNECTED 』
+│
+├❖ *To:* @${owner}
+├❖ *Bot:* ${db.data.botname}
+├❖ *Prefix:* ${db.data.prefix}
+├❖ *Mode:* ${db.data.mode}
+├❖ *Platform:* ${db.data.platform}
+├❖ *Status:* ✅ Online
+├⊸ *Session:* Valid & Secure
+│
+╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
+    await sock.sendMessage(ownerJid, { text: msg, mentions: [ownerJid] })
+    logger.success('BOT', 'Connected message sent to owner')
+  } catch (e) {
+    logger.error('BOT', 'Failed to send connected msg', e.message)
+  }
+}
+
 server.listen(PORT, () => {
-  console.log(`SBG Dashboard running on port ${PORT}`)
-  startSBG()
+  logger.success('SERVER', `Port ${PORT} opened for ${db.data.platform || 'Host'}`)
+  startBot()
 })
