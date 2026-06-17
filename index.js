@@ -1,25 +1,24 @@
 import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
-import makeWASocket, { 
-  useMultiFileAuthState, 
-  DisconnectReason, 
-  Browsers, 
-  fetchLatestBaileysVersion 
-} from '@whiskeysockets/baileys'
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
 import pino from 'pino'
 import fs from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import db from './lib/database.js'
+import { initDb, db } from './lib/database.js'
 import { logger } from './lib/logger.js'
-import { loadPlugins } from './lib/loader.js'
-import { router } from './lib/router.js'
+import { initLoader } from './lib/loader.js'
+import { routeMessage, routeEvent } from './lib/router.js'
 import aliveHtml from './public/alive.html.js'
 import statusHtml from './public/status.html.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+// Attach logger to global scope
+global.logger = logger
+logger.info('GLOBAL', 'Logger attached to global scope')
 
 const app = express()
 const server = createServer(app)
@@ -28,8 +27,8 @@ const PORT = process.env.PORT || 3000
 app.use(express.static(join(__dirname, 'public')))
 app.use(express.json())
 
-app.get('/', (req, res) => res.send(aliveHtml))
-app.get('/status', (req, res) => res.send(statusHtml(db.data)))
+app.get('/', (req, res) => res.send(aliveHtml(db.data)))
+app.get('/status', (req, res) => res.send(statusHtml(db.data, global.cmdStats || {})))
 
 function loadSessionFromEnv() {
   const sessionId = process.env.SESSION_ID
@@ -38,7 +37,7 @@ function loadSessionFromEnv() {
     return false
   }
   try {
-    const SESSION_DIR = db.data.sessionPath || './sbg_session'
+    const SESSION_DIR = db.data.sessionPath || './sessions'
     if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true })
     const base64Data = sessionId.split('~')[1]
     const decoded = Buffer.from(base64Data, 'base64').toString('utf-8')
@@ -54,32 +53,20 @@ function loadSessionFromEnv() {
 
 async function startBot() {
   logger.bot('STARTUP', 'Starting SBG Bot...')
-  
-  // Dynamic Platform Detection
-  let platform = 'Katabump/Pterodactyl'
-  if (process.env.RENDER) platform = 'Render'
-  else if (process.env.RAILWAY_ENVIRONMENT) platform = 'Railway'
-  else if (process.env.DYNO) platform = 'Heroku'
-  else if (process.env.FLY_APP_NAME) platform = 'Fly'
-  else if (process.env.FIREBASE_CONFIG) platform = 'Firebase'
-  
-  db.data.platform = platform
-  await db.write()
-  
-  logger.success('DB', `Database mode: ${db.type} | Platform: ${platform}`)
+  await initDb()
+  logger.success('DB', `Database mode: ${db.data.mode}`)
 
-  const SESSION_DIR = db.data.sessionPath || './sbg_session'
+  const SESSION_DIR = db.data.sessionPath || './sessions'
   const CREDS_PATH = join(SESSION_DIR, 'creds.json')
 
   if (!fs.existsSync(CREDS_PATH)) {
     if (!loadSessionFromEnv()) {
-      logger.error('STARTUP', 'No session found. Waiting for QR (if enabled) or exit.')
-      // In this setup we strictly require SESSION_ID per prompt
+      logger.error('STARTUP', 'No session found. Exiting.')
       process.exit(1)
     }
   }
 
-  await loadPlugins()
+  await initLoader()
   const { version } = await fetchLatestBaileysVersion()
   logger.info('BAILEYS', `Using WA v${version.join('.')}`)
 
@@ -111,7 +98,7 @@ async function startBot() {
         logger.warn('CONNECTION', 'Reconnecting in 10s...')
         setTimeout(() => startBot(), 10000)
       } else {
-        logger.error('CONNECTION', 'Logged out. Delete session directory and re-pair.')
+        logger.error('CONNECTION', 'Logged out. Delete sessions/ and re-pair.')
         process.exit(1)
       }
     } else if (connection === 'open') {
@@ -122,10 +109,13 @@ async function startBot() {
         logger.success('OWNER', `Owner auto-set to: ${botNumber}`)
       }
 
-      const { botname, prefix, owner } = db.data
+      const botname = db.data.botname
+      const prefix = db.data.prefix
+      const owner = db.data.owner
+      const platform = db.data.platform
 
       logger.connected(sock.user.id, botname)
-      logger.banner(botname, prefix, owner, db.type, version.join('.'))
+      logger.banner(botname, prefix, owner, db.data.mode, version.join('.'))
 
       if (!db.data.firstConnect) {
         await sendConnectedMsg(sock)
@@ -135,22 +125,15 @@ async function startBot() {
     }
   })
 
-  sock.ev.on('messages.upsert', async (m) => {
-    if (m.type !== 'notify') return
-    for (const msg of m.messages) {
-      if (!msg.message) continue
-      
-      const from = msg.key.remoteJid
-      const sender = msg.key.participant || msg.key.remoteJid
-      const msgType = Object.keys(msg.message || {})[0]
-      
-      let body = ''
-      if (msgType === 'conversation') body = msg.message.conversation
-      else if (msgType === 'extendedTextMessage') body = msg.message.extendedTextMessage.text
-      else if (msgType === 'imageMessage') body = msg.message.imageMessage.caption
-      else if (msgType === 'videoMessage') body = msg.message.videoMessage.caption
-      
-      const cmd = body.startsWith(db.data.prefix) ? body.split(' ')[0] : (db.data.noprefix ? body.split(' ')[0] : null)
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return
+    for (const m of messages) {
+      if (!m.message) continue
+      const from = m.key.remoteJid
+      const sender = m.key.participant || m.key.remoteJid
+      const msgType = Object.keys(m.message || {})[0]
+      const body = m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || m.message?.videoMessage?.caption || ''
+      const cmd = body.startsWith(db.data.prefix) ? body.split(' ')[0] : null
 
       let chatType = 'DM'
       if (from.endsWith('@g.us')) chatType = 'GROUP'
@@ -160,7 +143,7 @@ async function startBot() {
       const msgLabel = `${chatType} ${msgType?.toUpperCase() || 'UNKNOWN'}`
       logger.incoming(from, sender.split('@')[0], cmd || msgLabel)
 
-      await router(msg, sock, db)
+      await routeMessage(sock, m)
     }
   })
 }
@@ -180,7 +163,7 @@ async function sendConnectedMsg(sock) {
 ├⊸ *Session:* Valid & Secure
 │
 ╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
-    await sock.sendMessage(ownerJid, { text: msg, mentions: [ownerJid] })
+    await sock.sendMessage(ownerJid, { text: msg })
     logger.success('BOT', 'Connected message sent to owner')
   } catch (e) {
     logger.error('BOT', 'Failed to send connected msg', e.message)
@@ -188,6 +171,6 @@ async function sendConnectedMsg(sock) {
 }
 
 server.listen(PORT, () => {
-  logger.success('SERVER', `Port ${PORT} opened for ${db.data.platform || 'Host'}`)
+  logger.success('SERVER', `Port ${PORT} opened for Render`)
   startBot()
 })

@@ -6,6 +6,7 @@ export default {
   desc: 'Remove sudo user',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('delsudo', 'Triggered', { args })
     if (!isOwner) return
 
     let number = args[0]?.replace(/[^0-9]/g, '')
@@ -13,6 +14,7 @@ export default {
       if (m.message?.extendedTextMessage?.contextInfo?.participant) {
         number = m.message.extendedTextMessage.contextInfo.participant.split('@')[0]
       } else {
+        logger.warn('delsudo', 'No number provided')
         if (db.data.confirmMsg) {
           await sock.sendMessage(m.key.remoteJid, {
             text: `╭❖『 🗑️ DELSUDO 』
@@ -27,6 +29,7 @@ export default {
     }
 
     if (!db.data.sudo.includes(number)) {
+      logger.info('delsudo', 'Number not found in sudo list')
       if (db.data.confirmMsg) {
         await sock.sendMessage(m.key.remoteJid, {
           text: `╭❖『 🗑️ DELSUDO 』
@@ -41,6 +44,7 @@ export default {
     }
 
     await db.delSudo(number)
+    logger.success('delsudo', `Sudo removed: ${number}`)
 
     if (db.data.confirmMsg) {
       await sock.sendMessage(m.key.remoteJid, {
@@ -51,6 +55,7 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
       })
+      logger.success('delsudo', 'Response sent')
     }
   }
 }

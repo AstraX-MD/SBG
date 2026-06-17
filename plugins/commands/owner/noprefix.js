@@ -6,6 +6,7 @@ export default {
   desc: 'Toggle no prefix mode',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('noprefix', 'Triggered', { args })
     if (!isOwner) return
 
     const option = args[0]?.toLowerCase()
@@ -13,6 +14,7 @@ export default {
     if (option === 'on' || option === 'true') {
       db.data.noprefix = true
       await db.write()
+      logger.info('noprefix', 'Status set to ON')
       if (db.data.confirmMsg) {
         await sock.sendMessage(m.key.remoteJid, {
           text: `╭❖『 🔧 NOPREFIX 』
@@ -24,10 +26,12 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
         })
+        logger.success('noprefix', 'Confirmation sent')
       }
     } else if (option === 'off' || option === 'false') {
       db.data.noprefix = false
       await db.write()
+      logger.info('noprefix', 'Status set to OFF')
       if (db.data.confirmMsg) {
         await sock.sendMessage(m.key.remoteJid, {
           text: `╭❖『 🔧 NOPREFIX 』
@@ -39,8 +43,10 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
         })
+        logger.success('noprefix', 'Confirmation sent')
       }
     } else {
+      logger.warn('noprefix', 'Invalid input')
       await sock.sendMessage(m.key.remoteJid, {
         text: `╭❖『 🔧 NOPREFIX 』
 │

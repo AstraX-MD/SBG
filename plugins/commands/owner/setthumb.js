@@ -6,14 +6,12 @@ export default {
   desc: 'Change bot thumbnail',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('setthumb', 'Triggered', { args })
     if (!isOwner) return
 
     let url = args[0]
-    if (!url && m.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
-      // Logic to handle image upload would go here, for now use URL
-    }
-
     if (!url) {
+      logger.warn('setthumb', 'No URL provided')
       await sock.sendMessage(m.key.remoteJid, {
         text: `╭❖『 🖼️ THUMBNAIL 』
 │
@@ -27,6 +25,7 @@ export default {
 
     db.data.botThumbnail = url
     await db.write()
+    logger.success('setthumb', `Thumbnail updated: ${url}`)
 
     if (db.data.confirmMsg) {
       await sock.sendMessage(m.key.remoteJid, {
@@ -37,6 +36,7 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
       })
+      logger.success('setthumb', 'Response sent')
     }
   }
 }

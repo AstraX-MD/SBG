@@ -6,6 +6,7 @@ export default {
   desc: 'Change bot response mode',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('mode', 'Triggered', { args })
     if (!isOwner) return
 
     const modes = {
@@ -23,6 +24,7 @@ export default {
     const newMode = args[0]?.toLowerCase()
 
     if (!newMode || !modes[newMode]) {
+      logger.warn('mode', 'Invalid mode or no mode provided')
       const currentMode = modes[db.data.mode] || { name: 'Unknown', emoji: '❓' }
       let targetInfo = ''
       if (db.data.mode === 'onlytag') targetInfo = `\n├─⊷ *Target:* ${db.data.targetTag}`
@@ -72,8 +74,10 @@ export default {
       db.data.targetJid = jid
     }
 
+    const oldMode = db.data.mode
     db.data.mode = newMode
     await db.write()
+    logger.success('mode', `Mode updated from ${oldMode} to ${newMode}`)
 
     if (db.data.confirmMsg) {
       const modeInfo = modes[newMode]
@@ -84,6 +88,7 @@ export default {
 │
 ╰⊷ ${db.data.botname} ${db.data.presents} 🦚`
       await sock.sendMessage(m.key.remoteJid, { text })
+      logger.success('mode', 'Response sent')
     }
   }
 }

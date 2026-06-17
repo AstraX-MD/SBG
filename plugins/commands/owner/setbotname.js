@@ -6,10 +6,12 @@ export default {
   desc: 'Change bot name',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('setbotname', 'Triggered', { args })
     if (!isOwner) return
 
     const newName = args.join(' ')
     if (!newName) {
+      logger.warn('setbotname', 'No name provided')
       await sock.sendMessage(m.key.remoteJid, {
         text: `╭❖『 🏷️ BOTNAME 』
 │
@@ -24,6 +26,7 @@ export default {
     const oldName = db.data.botname
     db.data.botname = newName
     await db.write()
+    logger.success('setbotname', `Name updated from ${oldName} to ${newName}`)
 
     if (db.data.confirmMsg) {
       await sock.sendMessage(m.key.remoteJid, {
@@ -35,6 +38,7 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
       })
+      logger.success('setbotname', 'Response sent')
     }
   }
 }

@@ -5,15 +5,21 @@ export default {
   emoji: '⚡',
   desc: 'Speed check',
   async execute(sock, m, args, db) {
-    const start = Date.now()
-    const latency = Date.now() - start
-    const text = `╭❖『 ⚡ PING 』
+    logger.cmd('ping', 'Triggered', { from: m.key.remoteJid, sender: m.pushName })
+    try {
+      const start = Date.now()
+      const latency = Date.now() - start
+      const text = `╭❖『 ⚡ PING 』
 │
 ├❖ *${latency}ms*
 ├⊸ *Online* ✅
 │
-╰❖ *${db.botname}* 🦚`
-    
-    await sock.sendMessage(m.key.remoteJid, { text })
+╰❖ *${db.data.botname}* 🦚`
+      
+      await sock.sendMessage(m.key.remoteJid, { text })
+      logger.success('ping', 'Response sent', { to: m.key.remoteJid })
+    } catch (e) {
+      logger.error('ping', 'Failed', e.message)
+    }
   }
 }

@@ -6,10 +6,12 @@ export default {
   desc: 'Change presents text',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('setpresents', 'Triggered', { args })
     if (!isOwner) return
 
     const newPresents = args.join(' ')
     if (!newPresents) {
+      logger.warn('setpresents', 'No text provided')
       await sock.sendMessage(m.key.remoteJid, {
         text: `╭❖『 ✨ PRESENTS 』
 │
@@ -24,6 +26,7 @@ export default {
     const oldPresents = db.data.presents
     db.data.presents = newPresents
     await db.write()
+    logger.success('setpresents', `Presents updated from ${oldPresents} to ${newPresents}`)
 
     if (db.data.confirmMsg) {
       await sock.sendMessage(m.key.remoteJid, {
@@ -35,6 +38,7 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
       })
+      logger.success('setpresents', 'Response sent')
     }
   }
 }

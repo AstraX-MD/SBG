@@ -6,6 +6,7 @@ export default {
   desc: 'Add sudo user',
   isOwner: true,
   async execute(sock, m, args, db, { isOwner }) {
+    logger.cmd('addsudo', 'Triggered', { args })
     if (!isOwner) return
 
     let number = args[0]?.replace(/[^0-9]/g, '')
@@ -13,6 +14,7 @@ export default {
       if (m.message?.extendedTextMessage?.contextInfo?.participant) {
         number = m.message.extendedTextMessage.contextInfo.participant.split('@')[0]
       } else {
+        logger.warn('addsudo', 'No number provided')
         if (db.data.confirmMsg) {
           await sock.sendMessage(m.key.remoteJid, {
             text: `╭❖『 👑 SUDO 』
@@ -28,6 +30,7 @@ export default {
     }
 
     if (db.data.sudo.includes(number)) {
+      logger.info('addsudo', 'Number already exists in sudo list')
       if (db.data.confirmMsg) {
         await sock.sendMessage(m.key.remoteJid, {
           text: `╭❖『 👑 SUDO 』
@@ -42,6 +45,7 @@ export default {
     }
 
     await db.addSudo(number)
+    logger.success('addsudo', `Sudo added: ${number}`)
 
     if (db.data.confirmMsg) {
       await sock.sendMessage(m.key.remoteJid, {
@@ -52,6 +56,7 @@ export default {
 │
 ╰❖ *${db.data.botname}* 🦚`
       })
+      logger.success('addsudo', 'Response sent')
     }
   }
 }
