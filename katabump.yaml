@@ -1,0 +1,9 @@
+name: sbg-bot
+services:
+  - name: bot
+    build:
+      context: .
+    command: npm start
+    environment:
+      - SESSION_ID=${SESSION_ID}
+      - GROQ_API_KEY=${GROQ_API_KEY}

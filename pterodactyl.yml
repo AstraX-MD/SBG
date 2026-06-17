@@ -1,0 +1,11 @@
+name: SBG Bot
+author: SBG
+docker_image: ghcr.io/parkervcp/yolks:nodejs_20
+startup: npm start
+environment:
+  SESSION_ID:
+    description: WhatsApp Session ID
+    default: ""
+  GROQ_API_KEY:
+    description: Groq API Key
+    default: ""
