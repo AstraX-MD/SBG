@@ -1,16 +1,19 @@
 export default {
   name: 'alive',
+  alias: ['bot'],
   category: 'general',
-  execute: async (m, sock, db) => {
-    const caption = `╭❖『 🤖 SBG STATUS 』
+  emoji: '✨',
+  desc: 'Bot status',
+  async execute(sock, m, args, db) {
+    const text = `╭❖『 ✨ ALIVE 』
 │
-├❖ *Bot:* SBG (Small But Genius)
-├❖ *Status:* Active & Running 🚀
-├❖ *Uptime:* Stable
-├❖ *Database:* ${db.type}
-├⊸ *Version:* 1.0.0
+├❖ *${db.botname}* is Online
+├❖ *Mode:* ${db.mode}
+├❖ *Prefix:* ${db.prefix}
+├⊸ *Ready* ✅
 │
-╰❖ *SBG Online* 🧠`
-    await sock.sendMessage(m.jid, { text: caption })
+╰❖ *${db.botname} ${db.presents}* 🦚`
+    
+    await sock.sendMessage(m.key.remoteJid, { text })
   }
 }

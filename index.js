@@ -89,18 +89,18 @@ async function startSBG() {
       
       if (!db.data.firstConnect) {
         sock.sendMessage(ownerJid, {
-          image: { url: 'https://i.ibb.co/0pymBf8T/file-000000002ee471f4a0c0930a2621f19a.png' },
-          caption: `╭❖『 🤖 SBG CONNECTED 』
+          image: { url: db.data.botThumbnail },
+          caption: `╭❖『 🤖 ${db.data.botname} CONNECTED 』
 │
 ├❖ *To:* @owner
-├❖ *Bot:* ${db.data.botname || 'SBG'}
-├❖ *Prefix:* ${db.data.prefix || '.'}
-├❖ *Mode:* ${db.data.mode || 'Public'}
+├❖ *Bot:* ${db.data.botname}
+├❖ *Prefix:* ${db.data.prefix}
+├❖ *Mode:* ${db.data.mode}
 ├❖ *Database:* ${db.type}
 ├❖ *Status:* ✅ Online
 ├⊸ *Session:* Valid & Secure
 │
-╰❖ *Small But Genius* 🧠`
+╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
         })
         db.data.firstConnect = true
       }
@@ -116,7 +116,6 @@ setInterval(() => {
   const ramUsage = (1 - os.freemem() / os.totalmem()) * 100
   if (ramUsage > MAX_RAM_PERCENT) {
     logger.info('RAM Usage high, cleaning...')
-    // Basic cleanup logic for orphaned sessions would go here
   }
 }, 120000)
 
