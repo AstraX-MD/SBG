@@ -12,10 +12,11 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import dotenv from 'dotenv'
 import aliveHtml from './public/alive.html.js'
+import statusHtml from './public/status.html.js'
 import db from './lib/database.js'
 import { MessageUpsert } from './lib/MessageUpsert.js'
 import { loadPlugins } from './lib/loader.js'
-import logger from './lib/logger.js'
+import logger, { cmdStats } from './lib/logger.js'
 
 dotenv.config()
 
@@ -30,26 +31,46 @@ const io = new Server(server)
 const PORT = process.env.PORT || 10000
 
 app.use(express.static(join(__dirname, 'public')))
+app.use(express.json())
 
 app.get('/', (req, res) => {
   res.send(aliveHtml)
 })
 
-app.get('/health', (req, res) => {
-  res.send('OK')
+app.get('/status', (req, res) => {
+  res.send(statusHtml(db.data))
 })
 
-let botStatus = {
-  online: false,
-  session: 'Invalid',
-  uptime: Date.now(),
-  ram: '0%',
-  db: 'RAM'
-}
+// API Endpoints
+app.get('/api/stats', (req, res) => {
+  res.json({
+    ...cmdStats,
+    totalCommands: global.commands?.size || 0
+  })
+})
 
-app.get('/status', (req, res) => {
-  botStatus.ram = `${Math.round((1 - os.freemem() / os.totalmem()) * 100)}%`
-  res.json(botStatus)
+app.get('/api/info', (req, res) => {
+  res.json({
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    platform: db.data.platform,
+    os: {
+      total: os.totalmem(),
+      free: os.freemem()
+    }
+  })
+})
+
+app.post('/api/update', async (req, res) => {
+  const { field, value } = req.body
+  // Simple check - in production you'd use a secret key or session
+  if (field in db.data) {
+    db.data[field] = value
+    await db.write()
+    res.json({ success: true })
+  } else {
+    res.status(400).json({ success: false, error: 'Invalid field' })
+  }
 })
 
 async function startSBG() {
@@ -79,21 +100,12 @@ async function startSBG() {
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update
-    if (qr) {
-      botStatus.session = 'Waiting for Scan'
-    }
+    const { connection, lastDisconnect } = update
     if (connection === 'close') {
       const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut
-      botStatus.online = false
       if (shouldReconnect) startSBG()
     } else if (connection === 'open') {
-      botStatus.online = true
-      botStatus.session = 'Valid'
-      botStatus.db = db.type || 'RAM'
-      
       const ownerJid = sock.user.id.split(':')[0] + '@s.whatsapp.net'
-      
       if (!db.data.firstConnect) {
         sock.sendMessage(ownerJid, {
           image: { url: db.data.botThumbnail },
@@ -116,13 +128,6 @@ async function startSBG() {
     await MessageUpsert(sock, db, m)
   })
 }
-
-setInterval(() => {
-  const ramUsage = (1 - os.freemem() / os.totalmem()) * 100
-  if (ramUsage > MAX_RAM_PERCENT) {
-    logger.info('RAM Usage high, cleaning...')
-  }
-}, 120000)
 
 server.listen(PORT, () => {
   console.log(`SBG Dashboard running on port ${PORT}`)
