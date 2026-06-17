@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion, makeInMemoryStore } from '@whiskeysockets/baileys'
 import pino from 'pino'
 import fs from 'fs'
 import { join, dirname } from 'path'
@@ -10,20 +10,25 @@ import { initDb, db } from './lib/database.js'
 import { logger } from './lib/logger.js'
 import { initLoader } from './lib/loader.js'
 import { routeMessage } from './lib/router.js'
-import { MessageUpsert } from './lib/MessageUpsert.js'
 import aliveHtml from './public/alive.html.js'
 import statusHtml from './public/status.html.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-// Attach logger to global scope
 global.logger = logger
 logger.info('GLOBAL', 'Logger attached to global scope')
 
 const app = express()
 const server = createServer(app)
 const PORT = process.env.PORT || 3000
+
+// Initialize Store
+const store = makeInMemoryStore({ logger: pino({ level: 'silent' }) })
+store.readFromFile('./sessions/baileys_store.json')
+setInterval(() => {
+  store.writeToFile('./sessions/baileys_store.json')
+}, 10000)
 
 app.use(express.static(join(__dirname, 'public')))
 app.use(express.json())
@@ -55,7 +60,15 @@ function loadSessionFromEnv() {
 async function startBot() {
   logger.bot('STARTUP', 'Starting SBG Bot...')
   await initDb()
-  logger.success('DB', `Database mode: ${db.data.mode}`)
+  
+  const platform = process.env.RENDER ? 'Render' : 
+                   process.env.RAILWAY_ENVIRONMENT ? 'Railway' :
+                   process.env.DYNO ? 'Heroku' :
+                   process.env.FLY_APP_NAME ? 'Fly' :
+                   process.env.FIREBASE_CONFIG ? 'Firebase' : 'Local'
+  db.data.platform = platform
+
+  logger.success('DB', `Database mode: ${db.type}`)
 
   const SESSION_DIR = db.data.sessionPath || './sessions'
   const CREDS_PATH = join(SESSION_DIR, 'creds.json')
@@ -84,8 +97,16 @@ async function startBot() {
     generateHighQualityLinkPreview: false,
     defaultQueryTimeoutMs: 60000,
     keepAliveIntervalMs: 10000,
-    getMessage: async () => ({ conversation: '' })
+    getMessage: async (key) => {
+      if (store) {
+        const msg = await store.loadMessage(key.remoteJid, key.id)
+        return msg?.message || undefined
+      }
+      return { conversation: '' }
+    }
   })
+
+  store.bind(sock.ev)
 
   sock.ev.on('creds.update', saveCreds)
 
@@ -105,15 +126,19 @@ async function startBot() {
     } else if (connection === 'open') {
       const botNumber = sock.user.id.split(':')[0].split('@')[0]
       if (!db.data.owner || db.data.owner === '') {
-        db.data.owner = botNumber
+        db.data.owner = botNumber + '@s.whatsapp.net'
         await db.write()
         logger.success('OWNER', `Owner auto-set to: ${botNumber}`)
+      }
+      
+      if (!db.data.antidelete.destination) {
+        db.data.antidelete.destination = db.data.owner
+        await db.write()
       }
 
       const botname = db.data.botname
       const prefix = db.data.prefix
-      const owner = db.data.owner
-      const platform = db.data.platform
+      const owner = db.data.owner.split('@')[0]
 
       logger.connected(sock.user.id, botname)
       logger.banner(botname, prefix, owner, db.data.mode, version.join('.'))
@@ -129,18 +154,23 @@ async function startBot() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return
     for (const m of messages) {
+      const { MessageUpsert } = await import('./lib/MessageUpsert.js')
       await MessageUpsert(sock, db, m)
     }
+  })
+
+  sock.ev.on('messages.delete', async (update) => {
+    const antidelete = await import('./plugins/events/anti/antidelete.js').catch(() => null)
+    if (antidelete) await antidelete.default(sock, db, update)
   })
 }
 
 async function sendConnectedMsg(sock) {
   try {
     const owner = db.data.owner
-    const ownerJid = `${owner}@s.whatsapp.net`
     const msg = `╭❖『 🤖 ${db.data.botname} CONNECTED 』
 │
-├❖ *To:* @${owner}
+├❖ *To:* @${owner.split('@')[0]}
 ├❖ *Bot:* ${db.data.botname}
 ├❖ *Prefix:* ${db.data.prefix}
 ├❖ *Mode:* ${db.data.mode}
@@ -149,7 +179,7 @@ async function sendConnectedMsg(sock) {
 ├⊸ *Session:* Valid & Secure
 │
 ╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
-    await sock.sendMessage(ownerJid, { text: msg })
+    await sock.sendMessage(owner, { text: msg, mentions: [owner] })
     logger.success('BOT', 'Connected message sent to owner')
   } catch (e) {
     logger.error('BOT', 'Failed to send connected msg', e.message)
