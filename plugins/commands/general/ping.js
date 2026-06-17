@@ -3,17 +3,14 @@ export default {
   alias: ['p'],
   category: 'general',
   emoji: '⚡',
-  desc: 'Check speed',
+  desc: 'Speed check',
   async execute(sock, m, args, db) {
     const start = Date.now()
-    const speed = Date.now() - start
-    const bars = '█'.repeat(Math.min(Math.floor(speed/100), 10))
-    
+    const latency = Date.now() - start
     const text = `╭❖『 ⚡ PING 』
 │
-├❖ *Speed:* ${speed}ms
-├❖ ${bars}
-├⊸ *Status:* Online
+├❖ *${latency}ms*
+├⊸ *Online* ✅
 │
 ╰❖ *${db.botname}* 🦚`
     

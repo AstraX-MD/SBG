@@ -5,12 +5,12 @@ export default {
   emoji: '✨',
   desc: 'Bot status',
   async execute(sock, m, args, db) {
+    const prefixDisplay = db.noprefix ? 'Off' : db.prefix
     const text = `╭❖『 ✨ ALIVE 』
 │
-├❖ *${db.botname}* is Online
+├❖ *${db.botname}* Online
 ├❖ *Mode:* ${db.mode}
-├❖ *Prefix:* ${db.prefix}
-├⊸ *Ready* ✅
+├❖ *Prefix:* ${prefixDisplay}
 │
 ╰❖ *${db.botname} ${db.presents}* 🦚`
     

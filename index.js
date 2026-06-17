@@ -3,10 +3,7 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import pino from 'pino'
-import fs from 'fs'
 import os from 'os'
-import qrcode from 'qrcode'
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
