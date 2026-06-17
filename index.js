@@ -29,7 +29,6 @@ app.use(express.json())
 app.get('/', (req, res) => res.send(aliveHtml))
 app.get('/status', (req, res) => res.send(statusHtml))
 
-// PROCESS ERROR HANDLING - NEVER EXIT
 process.on('uncaughtException', (err) => {
   logger.error('CRASH', 'Uncaught Exception detected', err.stack)
 })
@@ -70,20 +69,17 @@ async function startBot() {
                      process.env.FIREBASE_CONFIG ? 'Firebase' : 'Local'
     db.data.platform = platform
 
-    logger.success('DB', `Database mode: ${db.type}`)
-
     const SESSION_DIR = db.data.sessionPath || './sessions'
     const CREDS_PATH = join(SESSION_DIR, 'creds.json')
 
     if (!fs.existsSync(CREDS_PATH)) {
       if (!loadSessionFromEnv()) {
-        logger.error('STARTUP', 'No session found. Waiting for manual session...')
+        logger.error('STARTUP', 'No session found. Waiting for QR...')
       }
     }
 
     await initLoader()
     
-    // VERSION FALLBACK SYSTEM
     let version;
     try {
       const latest = await fetchLatestBaileysVersion()
@@ -92,8 +88,6 @@ async function startBot() {
       logger.warn('BAILEYS', 'Failed to fetch latest version, using fallback')
       version = [2, 3000, 1015901307]
     }
-
-    logger.info('BAILEYS', `Using WA v${version.join('.')}`)
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
 
@@ -104,12 +98,17 @@ async function startBot() {
       logger: pino({ level: 'silent' }),
       browser: Browsers.ubuntu('Chrome'),
       markOnlineOnConnect: false,
-      syncFullHistory: false,
       generateHighQualityLinkPreview: false,
-      defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 10000,
       getMessage: async (key) => {
         return { conversation: '' }
+      }
+    })
+
+    // REGISTER UPSERT IMMEDIATELY
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return
+      for (const m of messages) {
+        await routeMessage(sock, m)
       }
     })
 
@@ -127,24 +126,20 @@ async function startBot() {
             logger.warn('CONNECTION', 'Reconnecting in 10s...')
             setTimeout(() => startBot(), 10000)
           } else {
-            logger.error('CONNECTION', 'Logged out. Deleting session for fresh start...')
+            logger.error('CONNECTION', 'Logged out. Deleting session...')
             if (fs.existsSync(CREDS_PATH)) fs.unlinkSync(CREDS_PATH)
             setTimeout(() => startBot(), 5000)
           }
         } else if (connection === 'open') {
           const botNumber = sock.user.id.split(':')[0].split('@')[0]
           if (!db.data.owner || db.data.owner === '') {
-            db.data.owner = botNumber + '@s.whatsapp.net'
+            db.data.owner = botNumber
             await db.write()
             logger.success('OWNER', `Owner auto-set to: ${botNumber}`)
           }
           
-          const botname = db.data.botname
-          const prefix = db.data.prefix
-          const owner = db.data.owner.split('@')[0]
-
-          logger.connected(sock.user.id, botname)
-          logger.banner(botname, prefix, owner, db.data.mode, version.join('.'))
+          logger.connected(sock.user.id, db.data.botname)
+          logger.banner(db.data.botname, db.data.prefix, db.data.owner, db.data.mode, version.join('.'))
 
           if (!db.data.firstConnect) {
             await sendConnectedMsg(sock)
@@ -157,56 +152,6 @@ async function startBot() {
       }
     })
 
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      try {
-        if (type !== 'notify') return
-        for (const m of messages) {
-          if (!m.message) continue
-          const from = m.key.remoteJid
-          const sender = m.key.participant || m.key.remoteJid
-          
-          // JID Type Detection
-          let jidType = 'DM'
-          if (from.endsWith('@g.us')) jidType = 'GROUP'
-          else if (from.endsWith('@newsletter')) jidType = 'CHANNEL'
-          else if (from === 'status@broadcast') jidType = 'STATUS'
-
-          // Media Type Detection
-          const msgType = Object.keys(m.message)[0]
-          const mediaMap = {
-            conversation: 'TEXT',
-            extendedTextMessage: 'TEXT',
-            imageMessage: 'IMAGE',
-            videoMessage: 'VIDEO',
-            audioMessage: 'AUDIO',
-            documentMessage: 'DOCUMENT',
-            stickerMessage: 'STICKER',
-            locationMessage: 'LOCATION',
-            contactMessage: 'CONTACT',
-            reactionMessage: 'REACTION',
-            pollCreationMessageV3: 'POLL'
-          }
-          const mediaType = mediaMap[msgType] || msgType.toUpperCase().replace('MESSAGE', '')
-
-          // Body Extraction
-          const body = m.message.conversation || 
-                       m.message.extendedTextMessage?.text || 
-                       m.message.imageMessage?.caption || 
-                       m.message.videoMessage?.caption || ''
-          
-          const isCmd = body.startsWith(db.data.prefix)
-          
-          // Log Message
-          logger.incoming(from, sender.split('@')[0], body.slice(0, 30), mediaType, jidType, isCmd)
-
-          // Route Message
-          const { MessageUpsert } = await import('./lib/MessageUpsert.js')
-          await MessageUpsert(sock, db, m)
-        }
-      } catch (e) {
-        logger.error('UPSERT', 'Error handling message', e.message)
-      }
-    })
   } catch (e) {
     logger.error('STARTUP', 'Fatal startBot error', e.message)
     setTimeout(() => startBot(), 30000)
@@ -216,9 +161,10 @@ async function startBot() {
 async function sendConnectedMsg(sock) {
   try {
     const owner = db.data.owner
+    const ownerJid = owner.includes('@') ? owner : `${owner}@s.whatsapp.net`
     const msg = `╭❖『 🤖 ${db.data.botname} CONNECTED 』
 │
-├❖ *To:* @${owner.split('@')[0]}
+├❖ *To:* @${owner}
 ├❖ *Bot:* ${db.data.botname}
 ├❖ *Prefix:* ${db.data.prefix}
 ├❖ *Mode:* ${db.data.mode}
@@ -228,7 +174,7 @@ async function sendConnectedMsg(sock) {
 │
 ╰❖ *${db.data.botname} ${db.data.presents}* 🦚`
     
-    await sock.sendMessage(owner, { text: msg, mentions: [owner] })
+    await sock.sendMessage(ownerJid, { text: msg, mentions: [ownerJid] })
     logger.success('BOT', 'Connected message sent to owner')
   } catch (e) {
     logger.error('BOT', 'Failed to send connected msg', e.message)
